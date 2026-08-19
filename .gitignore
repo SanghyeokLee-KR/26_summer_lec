@@ -1,0 +1,11 @@
+# 기본적으로 최상위 항목을 전부 무시하고, day1/day2 데모만 허용한다
+/*
+
+!/.gitignore
+!/rag-day1-demo/
+!/rag-day2-demo/
+
+# 각 데모 폴더 내부의 빌드 산출물/캐시는 하위 .gitignore가 추가로 걸러낸다
+
+# OS 메타데이터 파일은 어디에 있든 제외
+.DS_Store
