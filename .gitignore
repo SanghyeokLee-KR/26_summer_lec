@@ -4,6 +4,7 @@
 !/.gitignore
 !/rag-day1-demo/
 !/rag-day2-demo/
+!/RAG_day1_slides.pdf
 
 # 각 데모 폴더 내부의 빌드 산출물/캐시는 하위 .gitignore가 추가로 걸러낸다
 
