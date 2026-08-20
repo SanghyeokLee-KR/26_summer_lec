@@ -18,6 +18,7 @@ docker compose up -d        # PGVector (Lab2.1부터 필요)
 ```bash
 # macOS / Linux
 ./run.sh chunking-strategies   # M2.1 청킹 기법 4종(Fixed/Recursive/구조기반/Sliding Window/Semantic) 비교
+./run.sh mmr                   # M2.3 — MMR: 순수 Top-K vs MMR(다양성 확보) 비교
 ./run.sh lab21                 # Lab2.1 — PGVector 인덱싱 (docker compose up -d 먼저 실행할 것)
 ./run.sh lab22                 # Lab2.2/M2.4 — LLM 기반 리랭크 데모
 ./run.sh lab23                 # Lab2.4 — RAG를 도구로 쓰기(Agentic RAG) vs 프롬프트 바인딩형 비교
@@ -26,6 +27,7 @@ docker compose up -d        # PGVector (Lab2.1부터 필요)
 ```bat
 :: Windows (cmd 또는 PowerShell)
 run.bat chunking-strategies
+run.bat mmr
 run.bat lab21
 run.bat lab22
 run.bat lab23
@@ -45,6 +47,8 @@ com.lecture.rag
 │   ├── SemanticChunker.java
 │   ├── SlidingWindowSplitter.java
 │   └── StructureBasedSplitter.java
+├── m23mmr/                                 — M2.3 MMR(Maximal Marginal Relevance) 참고 구현
+│   └── MmrSearchDemo.java                 (@Profile("mmr"))
 ├── lab22/                                  — M2.4 Re-ranking 참고 구현
 │   ├── LlmReranker.java
 │   └── RerankDemo.java                    (@Profile("lab22"))
