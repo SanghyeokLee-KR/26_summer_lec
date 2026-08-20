@@ -1,31 +1,18 @@
 #!/usr/bin/env bash
 # 프로필 이름을 몰라도, 데모 이름만 알면 실행할 수 있게 만든 래퍼 스크립트.
-# 사용법: ./run.sh live-demo   (Swagger UI, http://localhost:8080/swagger-ui/index.html)
-#        ./run.sh lab11 | lab12 | lab13 | lab14
-#        ./run.sh hallucination-console | compare-console
+# 사용법: ./run.sh chunking-strategies   (M2.1 청킹 기법 4종 비교, 콘솔)
+#        ./run.sh lab21                  (PGVector 인덱싱, 콘솔 — 먼저 docker compose up -d 필요)
+#        ./run.sh lab22                  (리랭크 데모, 콘솔)
+#        ./run.sh lab23                  (RAG를 도구로 쓰기 — Agentic RAG, 콘솔)
 set -euo pipefail
 cd "$(dirname "$0")"
 
 case "${1:-}" in
-  live-demo)
-    echo "Swagger UI 데모 실행 중... 뜨면 http://localhost:8080/swagger-ui/index.html 접속"
-    ./mvnw spring-boot:run -Dspring-boot.run.profiles=api
-    ;;
-  lab14)
-    echo "Lab1.4 PDF 업로드 RAG API 실행 중... 뜨면 http://localhost:8080/swagger-ui/index.html 접속"
-    ./mvnw spring-boot:run -Dspring-boot.run.profiles=lab14
-    ;;
-  lab11|lab12|lab13)
+  chunking-strategies|lab21|lab22|lab23)
     ./mvnw spring-boot:run -Dspring-boot.run.profiles="$1"
     ;;
-  hallucination-console)
-    ./mvnw spring-boot:run -Dspring-boot.run.profiles=m1-hallucination
-    ;;
-  compare-console)
-    ./mvnw spring-boot:run -Dspring-boot.run.profiles=m1-compare
-    ;;
   *)
-    echo "사용법: ./run.sh <live-demo|lab11|lab12|lab13|hallucination-console|compare-console>"
+    echo "사용법: ./run.sh <chunking-strategies|lab21|lab22|lab23>"
     exit 1
     ;;
 esac
