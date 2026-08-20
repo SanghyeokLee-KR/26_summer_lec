@@ -3,6 +3,21 @@
 Vercel AI SDK(`useChat` + `TextStreamChatTransport`)로 만든 스트리밍 채팅 UI. PDF 업로드/인덱싱과 채팅 응답 스트리밍 모두 `rag-day3-demo` 백엔드(기본 `http://localhost:8081`)를 브라우저에서 직접 fetch로 호출한다 — Next.js API 라우트를 따로 두지 않은 구조.
 
 ## 사전 준비
+
+**Node.js 설치** (LTS 버전, 없는 경우만)
+
+macOS:
+```bash
+brew install node
+```
+
+Windows (PowerShell, winget은 Windows 10 2004+/11에 기본 내장):
+```powershell
+winget install OpenJS.NodeJS.LTS
+```
+winget이 없거나 옛날 Windows면 [nodejs.org](https://nodejs.org)에서 LTS 인스톨러를 직접 받아도 됨. 설치 후 새 터미널에서 `node -v`로 확인.
+
+**패키지 설치**
 ```bash
 npm install
 ```

@@ -3,9 +3,19 @@
 `rag-day3-frontend`(Next.js + Vercel AI SDK)가 호출하는 백엔드. PDF 업로드 → 인덱싱 → 스트리밍 RAG 응답까지 REST API 두 개로 제공한다.
 
 ## 사전 준비
+
+**Ollama 설치**
+
+macOS:
 ```bash
 brew install ollama
 brew services start ollama
+```
+
+Windows: [ollama.com/download](https://ollama.com/download)에서 인스톨러 받아서 실행하면 됨 — Docker/WSL 필요 없이 일반 데스크톱 앱처럼 설치되고, 설치 후 자동으로 백그라운드 서비스로 상시 실행됨(따로 켜는 명령 불필요).
+
+**모델 다운로드** (OS 공통)
+```bash
 ollama pull bge-m3
 ollama pull llama3.2:3b
 ```
