@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 
@@ -59,6 +60,18 @@ public class StudentRagPipeline extends AbstractRagPipeline {
     private static final List<String> PARTICLES = List.of(
             "에서", "으로", "까지", "부터", "에게",
             "은", "는", "이", "가", "을", "를", "의", "에", "와", "과", "도", "만", "로");
+
+    /** 후보 하나당 LLM 호출 한 번이라, 이 값이 그대로 재정렬 대기 시간입니다. */
+    private static final int MAX_RERANK_CALLS = 8;
+
+    /** 통째로 넣으면 점수 대신 요약이 옵니다. */
+    private static final int RERANK_SNIPPET_CHARS = 600;
+
+    /** "0에서 10 사이에서 8점" 같은 답이 있어 맨 앞 숫자를 바로 집으면 안 됩니다. */
+    private static final List<Pattern> SCORE_PATTERNS = List.of(
+            Pattern.compile("점수\\s*[:：]?\\s*(\\d{1,2})"),
+            Pattern.compile("(\\d{1,2})\\s*점"),
+            Pattern.compile("\\d{1,2}"));
 
     public StudentRagPipeline(KnowledgeBase knowledgeBase, ChatModel chatModel) {
         super(knowledgeBase, chatModel);
@@ -269,23 +282,68 @@ public class StudentRagPipeline extends AbstractRagPipeline {
      * LLM에게 "이 청크가 이 질문에 답하는 데 얼마나 도움이 되냐"를 0~10점으로 채점시켜 상위만 남긴다.
      * (이 파이프라인은 rerank 토글이 켜져 있으면 자동으로 topK의 2배를 검색해온다)
      *
-     * <p>구현 힌트:
-     * <pre>
-     * 1) 후보 하나씩 LLM 채점:
-     *      "질문: %s\n문서: %s\n이 문서가 질문에 답하는 데 얼마나 관련 있는지 0~10 숫자 하나만 답하세요."
-     * 2) 응답에서 첫 숫자만 정규식으로 뽑기 (LLM이 설명을 덧붙이는 경우 방어)
-     * 3) 점수 내림차순 정렬 → 앞에서부터 options.topKOrDefault()개
-     * 4) Day2 Lab2.2의 LlmReranker(rag-day2-demo)를 그대로 복사해와도 된다
-     * 5) 주의: 후보 8개면 LLM을 8번 부른다 → 답변까지 10초 이상 걸릴 수 있다.
-     *    느린 게 정상이고, 그 대가로 정확도를 사는 것이다(프론트 상단 배지에서 시간 비교 가능).
-     * </pre>
-     *
-     * @return 관련도 높은 순으로 정렬된 청크. 구현 전에는 {@code Optional.empty()}
+     * <p>재작성까지 켜면 후보가 20개를 넘겨서 앞쪽 여덟 개만 채점하고 나머지는 원래 순서로 뒤에 붙입니다.
      */
     @Override
     protected Optional<List<Document>> rerank(String query, List<Document> candidates, RagOptions options) {
-        // TODO(실버): 위 힌트를 참고해 구현하고, 아래 줄을 지우세요.
-        return Optional.empty();
+        if (candidates.isEmpty()) {
+            return Optional.of(List.of());
+        }
+        int scored = Math.min(candidates.size(), MAX_RERANK_CALLS);
+        if (scored < candidates.size()) {
+            log.info("재정렬 후보 {}개 중 앞 {}개만 채점합니다", candidates.size(), scored);
+        }
+
+        double[] scores = new double[scored];
+        for (int i = 0; i < scored; i++) {
+            scores[i] = relevanceScore(query, candidates.get(i));
+        }
+
+        List<Document> reranked = new ArrayList<>(candidates.size());
+        IntStream.range(0, scored)
+                .boxed()
+                .sorted((a, b) -> Double.compare(scores[b], scores[a]))
+                .forEach(index -> reranked.add(candidates.get(index)));
+        reranked.addAll(candidates.subList(scored, candidates.size()));
+        return Optional.of(reranked);
+    }
+
+    /** 하나 실패했다고 재정렬 전체를 버릴 이유는 없어서 0점으로 두고 넘어갑니다. */
+    private double relevanceScore(String query, Document candidate) {
+        String text = candidate.getText() == null ? "" : candidate.getText();
+        String prompt = """
+                질문: %s
+
+                문서: %s
+
+                이 문서가 질문에 답하는 데 얼마나 관련 있습니까?
+                다른 말 없이 "점수: N" 한 줄만 출력하세요. N은 0에서 10 사이 정수입니다.
+                """.formatted(query,
+                text.length() > RERANK_SNIPPET_CHARS ? text.substring(0, RERANK_SNIPPET_CHARS) : text);
+        try {
+            return parseScore(chatClient().prompt()
+                    .options(ChatOptions.builder().temperature(0.0))
+                    .user(prompt)
+                    .call()
+                    .content());
+        }
+        catch (Exception exception) {
+            log.warn("재정렬 채점 실패 — 0점으로 둡니다", exception);
+            return 0;
+        }
+    }
+
+    private static double parseScore(String raw) {
+        if (raw == null) {
+            return 0;
+        }
+        for (Pattern pattern : SCORE_PATTERNS) {
+            Matcher matcher = pattern.matcher(raw);
+            if (matcher.find()) {
+                return Math.min(Integer.parseInt(matcher.group(matcher.groupCount())), 10);
+            }
+        }
+        return 0;
     }
 
     // =================================================================== 골드
