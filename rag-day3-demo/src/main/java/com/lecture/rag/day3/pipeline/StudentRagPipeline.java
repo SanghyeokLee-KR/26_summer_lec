@@ -1,9 +1,14 @@
 package com.lecture.rag.day3.pipeline;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Component;
 
@@ -34,6 +39,16 @@ import com.lecture.rag.day3.knowledge.KnowledgeBase;
  */
 @Component
 public class StudentRagPipeline extends AbstractRagPipeline {
+
+    private static final Logger log = LoggerFactory.getLogger(StudentRagPipeline.class);
+
+    /** 쿼리 하나마다 임베딩 1회 + 벡터 검색 1회가 더 나갑니다. */
+    private static final int MAX_QUERIES = 3;
+
+    /** 3B 모델은 "번호 붙이지 마세요"를 잘 안 지킵니다. */
+    private static final Pattern LIST_MARKER = Pattern.compile("^(?:[-*•>#]+|\\d+\\s*[.)])\\s*");
+    private static final Pattern EDGE_NOISE = Pattern.compile("^[\"'“”‘’*_`]+|[\"'“”‘’*_`]+$");
+    private static final Pattern QUOTES = Pattern.compile("[\"“”]");
 
     public StudentRagPipeline(KnowledgeBase knowledgeBase, ChatModel chatModel) {
         super(knowledgeBase, chatModel);
@@ -77,24 +92,84 @@ public class StudentRagPipeline extends AbstractRagPipeline {
      * 이전 대화를 참고해 완전한 문장으로 다시 쓰거나("연회비는 얼마인가요?"),
      * 표현이 다른 여러 버전을 만들어 각각 검색하면 회수율(recall)이 올라간다.
      *
-     * <p>구현 힌트:
-     * <pre>
-     * 1) 이전 대화를 텍스트로 얻기:  RagPrompts.historyAsText(history, options.maxHistoryOrDefault())
-     * 2) LLM 호출:                 chatClient().prompt().user(프롬프트).call().content()
-     * 3) 프롬프트 예시:
-     *      "다음 대화의 마지막 질문을 문서 검색에 쓸 수 있게 완전한 문장으로 바꿔 쓰세요.
-     *       서로 표현이 다른 3개를 줄바꿈으로만 구분해서 출력하고, 번호나 설명은 붙이지 마세요."
-     * 4) 응답을 줄 단위로 쪼개고 빈 줄을 버려서 List&lt;String&gt;으로 만들기
-     * 5) 원문 질문도 목록에 포함시키는 게 안전하다 (재작성이 엉뚱해도 최소한의 검색 품질 보장)
-     * </pre>
-     *
-     * @return 검색에 쓸 쿼리 목록. 구현 전에는 {@code Optional.empty()}
+     * <p>원문 질문은 항상 첫 쿼리로 남겨둡니다.
      */
     @Override
     protected Optional<List<String>> rewriteQueries(String question, List<ChatRequest.Turn> history,
             RagOptions options) {
-        // TODO(실버): 위 힌트를 참고해 구현하고, 아래 줄을 지우세요.
-        return Optional.empty();
+
+        List<String> queries = new ArrayList<>();
+        queries.add(question);
+
+        String conversation = RagPrompts.historyAsText(history, options.maxHistoryOrDefault());
+        String raw;
+        try {
+            raw = chatClient().prompt()
+                    .options(ChatOptions.builder().temperature(0.0))
+                    .user(rewritePrompt(question, conversation))
+                    .call()
+                    .content();
+        }
+        catch (Exception exception) {
+            // 부가 단계라 실패해도 원문으로 검색은 계속합니다
+            log.warn("질문 재작성 실패 — 원문 질문으로만 검색합니다", exception);
+            return Optional.of(queries);
+        }
+
+        for (String line : (raw == null ? "" : raw).split("\\R")) {
+            String candidate = cleanQuery(line);
+            if (candidate.isEmpty() || containsIgnoreCase(queries, candidate)) {
+                continue;
+            }
+            queries.add(candidate);
+            if (queries.size() >= MAX_QUERIES) {
+                break;
+            }
+        }
+        return Optional.of(queries);
+    }
+
+    // 지시어를 따옴표 예시로 보여줬더니 모델이 그대로 베껴 와서, 규칙으로만 적습니다.
+    private static String rewritePrompt(String question, String conversation) {
+        return """
+                아래는 문서 검색 챗봇의 대화입니다. 마지막 질문을 검색용으로 다시 쓰세요.
+
+                규칙:
+                - 마지막 질문이 앞 내용을 가리키면, 가리키는 대상의 이름을 질문 안에 직접 넣습니다.
+                - 앞 대화에 없는 내용은 지어내지 않습니다.
+                - 반드시 질문 형태로 씁니다.
+                - 앞 대화의 질문을 그대로 베끼지 않습니다.
+
+                [이전 대화]
+                %s
+
+                [마지막 질문]
+                %s
+
+                서로 표현이 다른 질문 2개를 한 줄에 하나씩, 다른 말 없이 출력하세요.
+                """.formatted(conversation.isBlank() ? "(없음)" : conversation, question);
+    }
+
+    /** 쿼리로 쓸 수 없는 줄이면 빈 문자열을 돌려줍니다. */
+    private static String cleanQuery(String line) {
+        String text = line.strip();
+        String previous;
+        do {
+            // "**1) 질문**" 처럼 겹쳐 붙어서 한 번에 안 벗겨집니다
+            previous = text;
+            text = LIST_MARKER.matcher(text).replaceFirst("");
+            text = EDGE_NOISE.matcher(text).replaceAll("").strip();
+            text = QUOTES.matcher(text).replaceAll("").strip();
+        } while (!text.equals(previous));
+        // "다음은 재작성한 질문입니다:" 같은 머리말 거르기
+        if (text.length() < 3 || text.length() > 200 || text.endsWith(":") || text.endsWith("：")) {
+            return "";
+        }
+        return text;
+    }
+
+    private static boolean containsIgnoreCase(List<String> queries, String candidate) {
+        return queries.stream().anyMatch(candidate::equalsIgnoreCase);
     }
 
     // =================================================================== 실버 ②
