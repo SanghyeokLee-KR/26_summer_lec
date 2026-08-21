@@ -113,6 +113,10 @@ export function InspectorPanel({
 }
 
 function SourcesTab({ run, flash }: { run: Run; flash: number | null }) {
+  // 채택순은 파이프라인이 프롬프트에 넣은 순서다. 재정렬을 켰을 때 유사도순과 얼마나 달라졌는지
+  // 봐야 재정렬이 실제로 순서를 바꿨는지 판정할 수 있어서 토글을 둔다.
+  const [byScore, setByScore] = useState(false);
+
   if (run.sources.length === 0) {
     return (
       <p className="text-[12.5px] leading-relaxed text-subtle">
@@ -120,9 +124,21 @@ function SourcesTab({ run, flash }: { run: Run; flash: number | null }) {
       </p>
     );
   }
+
+  const sources = byScore
+    ? [...run.sources].sort((a, b) => (b.score ?? -1) - (a.score ?? -1))
+    : run.sources;
+
   return (
     <div className="flex flex-col gap-2">
-      {run.sources.map((source) => (
+      <button
+        type="button"
+        className="btn btn-ghost btn-xs self-start"
+        onClick={() => setByScore((v) => !v)}
+      >
+        {byScore ? "유사도순" : "채택순"}
+      </button>
+      {sources.map((source) => (
         <SourceCard
           key={`${source.chunkId ?? source.index}`}
           runId={run.runId}

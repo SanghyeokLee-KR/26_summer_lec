@@ -49,6 +49,16 @@ export function RunCard({
   const completionTokens = metricValue(run, "completionTokens");
   const speed = metricValue(run, "tokensPerSecond");
 
+  // 검색도 생성도 아닌 시간 — 재작성·재정렬·자기검증이 여기 들어간다.
+  // 총합만 보면 어디서 느려졌는지 안 보여서 따로 떼어 보여준다.
+  const ms = (key: string) => {
+    const value = metricValue(run, key);
+    return typeof value === "number" ? value : 0;
+  };
+  const extraMs =
+    typeof run.ms === "number" ? run.ms - ms("retrieveMs") - ms("generateMs") : 0;
+  const extra = formatMs(extraMs > 500 ? extraMs : undefined);
+
   return (
     <section
       className={`card flex min-w-0 flex-col gap-3 p-3.5 transition-colors ${
@@ -113,6 +123,11 @@ export function RunCard({
         {typeof chunks !== "undefined" && <span className="chip">근거 {chunks}개</span>}
         {retrieve && <span className="chip">검색 {retrieve}</span>}
         {generate && <span className="chip">생성 {generate}</span>}
+        {extra && (
+          <span className="chip" title="검색·생성을 뺀 나머지 — 질문 재작성, 재정렬, 자기 검증에 쓴 시간">
+            부가 {extra}
+          </span>
+        )}
         {typeof promptTokens !== "undefined" && (
           <span className="chip mono" title="프롬프트 토큰 / 생성 토큰">
             {String(promptTokens)}→{String(completionTokens ?? "?")} tok
