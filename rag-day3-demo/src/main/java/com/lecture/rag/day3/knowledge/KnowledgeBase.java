@@ -14,6 +14,7 @@ import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.SimpleVectorStore;
+import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -41,7 +42,9 @@ public class KnowledgeBase {
     private static final Logger log = LoggerFactory.getLogger(KnowledgeBase.class);
 
     private final EmbeddingModel embeddingModel;
-    private final SimpleVectorStore store;
+
+    /** 인터페이스에만 의존합니다. pgvector 프로필에서는 여기에 PGVector 빈이 들어옵니다. */
+    private final VectorStore store;
 
     /** docId -> 문서 메타. 업로드 순서를 유지하려고 LinkedHashMap. */
     private final Map<String, IndexedDocument> documents = new LinkedHashMap<>();
@@ -76,21 +79,27 @@ public class KnowledgeBase {
     private record StoredIndex(List<IndexedDocument> documents, Map<String, List<StoredChunk>> chunks) {
     }
 
-    public KnowledgeBase(EmbeddingModel embeddingModel,
+    public KnowledgeBase(EmbeddingModel embeddingModel, VectorStore store,
             @Value("${app.index.dir:index}") String indexDir) {
         this.embeddingModel = embeddingModel;
-        this.store = SimpleVectorStore.builder(embeddingModel).build();
+        this.store = store;
         this.storeFile = Path.of(indexDir, "vectors.json");
         this.metaFile = Path.of(indexDir, "documents.json");
     }
 
+    /** PGVector는 DB가 인덱스를 들고 있어서 파일로 또 저장할 이유가 없습니다. */
+    private SimpleVectorStore fileBackedStore() {
+        return this.store instanceof SimpleVectorStore simple ? simple : null;
+    }
+
     @PostConstruct
     synchronized void restore() {
-        if (!Files.exists(this.storeFile) || !Files.exists(this.metaFile)) {
+        SimpleVectorStore simple = fileBackedStore();
+        if (simple == null || !Files.exists(this.storeFile) || !Files.exists(this.metaFile)) {
             return;
         }
         try {
-            this.store.load(this.storeFile.toFile());
+            simple.load(this.storeFile.toFile());
             StoredIndex stored = this.json.readValue(this.metaFile, StoredIndex.class);
             for (IndexedDocument document : stored.documents()) {
                 this.documents.put(document.docId(), document);
@@ -108,9 +117,13 @@ public class KnowledgeBase {
 
     /** 매 변경마다 통째로 다시 씁니다. 실습 규모(문서 수십 개)에서는 증분 저장이 과합니다. */
     private void persist() {
+        SimpleVectorStore simple = fileBackedStore();
+        if (simple == null) {
+            return;
+        }
         try {
             Files.createDirectories(this.storeFile.getParent());
-            this.store.save(this.storeFile.toFile());
+            simple.save(this.storeFile.toFile());
             Map<String, List<StoredChunk>> chunks = new LinkedHashMap<>();
             this.chunksByDoc.forEach((docId, list) ->
                     chunks.put(docId, list.stream().map(StoredChunk::of).toList()));

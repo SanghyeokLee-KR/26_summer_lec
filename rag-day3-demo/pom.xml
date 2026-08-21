@@ -70,6 +70,23 @@
 		</dependencies>
 	</dependencyManagement>
 
+	<!--
+		PGVector는 빌드 프로필로 분리한다. 의존성을 항상 넣어두면 DataSource 자동설정이 켜져서
+		url 없이 뜨는 기본 실행이 부팅 단계에서 실패한다.
+		사용법: ./mvnw spring-boot:run -Ppgvector -Dspring-boot.run.profiles=pgvector
+	-->
+	<profiles>
+		<profile>
+			<id>pgvector</id>
+			<dependencies>
+				<dependency>
+					<groupId>org.springframework.ai</groupId>
+					<artifactId>spring-ai-starter-vector-store-pgvector</artifactId>
+				</dependency>
+			</dependencies>
+		</profile>
+	</profiles>
+
 	<build>
 		<plugins>
 			<plugin>
