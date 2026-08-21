@@ -95,21 +95,25 @@ public class DecomposeRagPipeline implements RagPipeline {
                 Flux.just(AgentEvent.stepStart("retrieve", "하위 질문별 검색")),
                 Flux.defer(() -> {
                     long t0 = System.currentTimeMillis();
+                    List<AgentEvent> events = new ArrayList<>();
                     List<List<Document>> perQuestion = new ArrayList<>();
                     for (String sub : subQuestions) {
-                        perQuestion.add(this.knowledgeBase.search(sub, options.topKOrDefault(),
-                                options.similarityThresholdOrDefault(), request.docIdsOrEmpty()));
+                        List<Document> hits = this.knowledgeBase.search(sub, options.topKOrDefault(),
+                                options.similarityThresholdOrDefault(), request.docIdsOrEmpty());
+                        perQuestion.add(hits);
+                        events.add(subQueryEvent(sub, hits));
                     }
                     List<Document> merged = RagPrompts.mergeDistinct(perQuestion);
                     if (merged.size() > options.topKOrDefault()) {
                         merged = merged.subList(0, options.topKOrDefault());
                     }
                     sources.addAll(RagPrompts.toSources(merged));
-                    return Flux.just(
-                            AgentEvent.stepDone("retrieve", "하위 질문별 검색", System.currentTimeMillis() - t0,
-                                    "질문 " + subQuestions.size() + "개 → 청크 " + sources.size() + "개"),
-                            AgentEvent.sources(sources),
-                            AgentEvent.metric("chunks", "사용한 청크", sources.size()));
+                    events.add(AgentEvent.stepDone("retrieve", "하위 질문별 검색",
+                            System.currentTimeMillis() - t0,
+                            "질문 " + subQuestions.size() + "개 → 청크 " + sources.size() + "개"));
+                    events.add(AgentEvent.sources(sources));
+                    events.add(AgentEvent.metric("chunks", "사용한 청크", sources.size()));
+                    return Flux.fromIterable(events);
                 }));
 
         Flux<AgentEvent> generate = Flux.concat(
@@ -186,6 +190,21 @@ public class DecomposeRagPipeline implements RagPipeline {
             subQuestions.add(question);
         }
         return subQuestions;
+    }
+
+    /**
+     * 규격에 없는 이벤트라 프론트가 인스펙터 "로그" 탭에 원문 그대로 보여줍니다. 하위 질문 하나가
+     * 각각 무엇을 얼마나 잘 잡았는지는 합쳐진 근거만 봐서는 알 수 없어서 따로 흘려보냅니다.
+     */
+    private static AgentEvent subQueryEvent(String subQuestion, List<Document> hits) {
+        List<String> scores = new ArrayList<>(hits.size());
+        for (Document hit : hits) {
+            scores.add(hit.getScore() == null ? "-" : String.format("%.3f", hit.getScore()));
+        }
+        return AgentEvent.of("subQuery")
+                .with("question", subQuestion)
+                .with("hits", hits.size())
+                .with("scores", scores);
     }
 
     private static AgentEvent toToken(ChatResponse response, StringBuilder answer) {
