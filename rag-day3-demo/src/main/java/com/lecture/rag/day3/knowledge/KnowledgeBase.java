@@ -1,5 +1,7 @@
 package com.lecture.rag.day3.knowledge;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -12,7 +14,11 @@ import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.SimpleVectorStore;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+
+import jakarta.annotation.PostConstruct;
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * 이 앱의 지식 베이스. 업로드된 문서들의 청크를 한 곳에 모아두고 검색을 제공한다.
@@ -21,9 +27,8 @@ import org.springframework.stereotype.Component;
  * 캡스톤은 여러 문서를 동시에 얹고 문서별로 지우는 게 가능해야 하므로, VectorStore 하나를 계속 쓰면서
  * 어떤 청크가 어떤 문서 소속인지 {@code docId} 메타데이터로 관리한다.
  *
- * <p><b>메모리에만 저장된다</b> — 백엔드를 재시작하면 인덱스는 사라진다.
- * 유지하고 싶으면 {@link SimpleVectorStore#save(java.io.File)} / {@code load(File)}를 써서
- * 기동 시 불러오도록 고쳐보는 게 좋은 확장 과제다.
+ * <p><b>인덱스는 디스크에 남습니다</b> — 문서를 올리거나 지울 때마다 {@code app.index.dir}(기본 {@code index/})에
+ * 벡터와 문서 메타를 쓰고, 기동할 때 다시 읽습니다. 원래는 메모리에만 두고 재시작하면 사라지는 구조였습니다.
  *
  * <p><b>PGVector로 바꾸고 싶다면</b>(Day2에서 쓴 것): pom.xml에
  * {@code spring-ai-starter-vector-store-pgvector}를 추가하고 이 클래스의 {@code store} 초기화를
@@ -47,9 +52,74 @@ public class KnowledgeBase {
      */
     private final Map<String, List<Document>> chunksByDoc = new LinkedHashMap<>();
 
-    public KnowledgeBase(EmbeddingModel embeddingModel) {
+    /**
+     * 인덱스를 남겨둘 위치입니다. {@code SimpleVectorStore.save}는 벡터와 청크만 담고 우리가 따로 들고 있는
+     * {@link IndexedDocument} 목록은 담지 않아서, 문서 메타를 옆에 JSON으로 같이 씁니다.
+     */
+    private final Path storeFile;
+    private final Path metaFile;
+    private final ObjectMapper json = new ObjectMapper();
+
+    /** 청크를 파일에 담기 위한 최소 형태입니다. id를 그대로 살려야 중복 제거와 문서 삭제가 유지됩니다. */
+    private record StoredChunk(String id, String text, Map<String, Object> metadata) {
+
+        static StoredChunk of(Document document) {
+            return new StoredChunk(document.getId(), document.getText(), document.getMetadata());
+        }
+
+        Document toDocument() {
+            return Document.builder().id(this.id).text(this.text).metadata(this.metadata).build();
+        }
+    }
+
+    /** 문서 메타와 청크를 한 파일에 같이 씁니다. */
+    private record StoredIndex(List<IndexedDocument> documents, Map<String, List<StoredChunk>> chunks) {
+    }
+
+    public KnowledgeBase(EmbeddingModel embeddingModel,
+            @Value("${app.index.dir:index}") String indexDir) {
         this.embeddingModel = embeddingModel;
         this.store = SimpleVectorStore.builder(embeddingModel).build();
+        this.storeFile = Path.of(indexDir, "vectors.json");
+        this.metaFile = Path.of(indexDir, "documents.json");
+    }
+
+    @PostConstruct
+    synchronized void restore() {
+        if (!Files.exists(this.storeFile) || !Files.exists(this.metaFile)) {
+            return;
+        }
+        try {
+            this.store.load(this.storeFile.toFile());
+            StoredIndex stored = this.json.readValue(this.metaFile, StoredIndex.class);
+            for (IndexedDocument document : stored.documents()) {
+                this.documents.put(document.docId(), document);
+            }
+            stored.chunks().forEach((docId, chunks) -> this.chunksByDoc.put(docId,
+                    new ArrayList<>(chunks.stream().map(StoredChunk::toDocument).toList())));
+            log.info("인덱스를 복원했습니다 (문서 {}개, 청크 {}개)", this.documents.size(), totalChunks());
+        }
+        catch (Exception exception) {
+            log.warn("인덱스 복원 실패 — 빈 상태로 시작합니다", exception);
+            this.documents.clear();
+            this.chunksByDoc.clear();
+        }
+    }
+
+    /** 매 변경마다 통째로 다시 씁니다. 실습 규모(문서 수십 개)에서는 증분 저장이 과합니다. */
+    private void persist() {
+        try {
+            Files.createDirectories(this.storeFile.getParent());
+            this.store.save(this.storeFile.toFile());
+            Map<String, List<StoredChunk>> chunks = new LinkedHashMap<>();
+            this.chunksByDoc.forEach((docId, list) ->
+                    chunks.put(docId, list.stream().map(StoredChunk::of).toList()));
+            this.json.writeValue(this.metaFile,
+                    new StoredIndex(List.copyOf(this.documents.values()), chunks));
+        }
+        catch (Exception exception) {
+            log.warn("인덱스 저장 실패 — 이번 실행에서만 유지됩니다", exception);
+        }
     }
 
     public EmbeddingModel embeddingModel() {
@@ -67,6 +137,8 @@ public class KnowledgeBase {
 
     public synchronized void register(IndexedDocument document) {
         this.documents.put(document.docId(), document);
+        // 인덱싱이 끝나는 시점이라 여기서 한 번만 저장하면 addChunks 배치마다 쓰지 않아도 됩니다
+        persist();
     }
 
     public synchronized List<IndexedDocument> documents() {
@@ -129,6 +201,7 @@ public class KnowledgeBase {
         if (chunks != null && !chunks.isEmpty()) {
             this.store.delete(chunks.stream().map(Document::getId).toList());
         }
+        persist();
         return removed != null || chunks != null;
     }
 
@@ -140,6 +213,7 @@ public class KnowledgeBase {
         }
         this.documents.clear();
         this.chunksByDoc.clear();
+        persist();
         log.info("지식 베이스를 비웠습니다 (청크 {}개 삭제)", ids.size());
     }
 }
