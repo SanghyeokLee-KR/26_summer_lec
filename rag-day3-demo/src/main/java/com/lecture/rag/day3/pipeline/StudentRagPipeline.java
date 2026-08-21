@@ -354,24 +354,56 @@ public class StudentRagPipeline extends AbstractRagPipeline {
      * <p>왜 필요한가: RAG를 붙여도 LLM은 컨텍스트에 없는 내용을 슬쩍 섞는다. 생성이 끝난 답변을 다시 한 번
      * "이 답변이 근거 안에 실제로 있는 내용인가?"로 검사하면, 할루시네이션을 사용자에게 경고할 수 있다.
      *
-     * <p>구현 힌트:
-     * <pre>
-     * 1) 근거 텍스트 조립:  RagPrompts.formatContext(sources)
-     * 2) LLM에게 판정 요청:
-     *      "[근거]\n%s\n\n[답변]\n%s\n\n답변의 모든 문장이 근거에 실제로 있는 내용인지 판정하세요.
-     *       형식: '통과' 또는 '주의: <근거에 없는 내용 요약>' 한 줄로만."
-     * 3) 결과 한 줄을 그대로 반환하면 화면 단계 카드와 안내 배너에 표시된다
-     * 4) 확장: Day3 오전 Lab3.1의 LLM-as-judge 점수(충실도/관련성)를 여기서 같이 계산해
-     *    "충실도 4/5" 같은 문자열로 반환해도 된다. 채점 전용 엔드포인트는 이미 있다
-     *    ({@code POST /api/evaluate}, 프론트 답변 카드의 "채점" 버튼)
-     * </pre>
-     *
-     * @return 사용자에게 보여줄 검증 결과 한 줄. 구현 전에는 {@code Optional.empty()}
+     * <p>답변이 이미 화면에 나간 뒤에 도는 단계라, 여기서 예외를 던지면 성공한 턴이 실패로 뒤집힙니다.
      */
     @Override
     protected Optional<String> selfCheck(String question, String answer, List<SourceRef> sources,
             RagOptions options) {
-        // TODO(골드): 위 힌트를 참고해 구현하고, 아래 줄을 지우세요.
-        return Optional.empty();
+        if (answer.isBlank()) {
+            return Optional.of("답변이 비어 있어 검증을 건너뛰었습니다");
+        }
+        if (sources.isEmpty()) {
+            return Optional.of("주의: 근거로 쓴 청크가 없습니다");
+        }
+        String prompt = """
+                [근거]
+                %s
+
+                [답변]
+                %s
+
+                답변의 모든 문장이 [근거] 안에 실제로 있는 내용인지 확인하세요.
+                전부 근거에 있으면 "통과" 한 단어만 출력하세요.
+                하나라도 없으면 "주의: <근거에 없는 내용 요약>" 형식으로 한 줄만 출력하세요.
+                """.formatted(RagPrompts.formatContext(sources), answer);
+        try {
+            return Optional.of(verdictLine(chatClient().prompt()
+                    .options(ChatOptions.builder().temperature(0.0))
+                    .user(prompt)
+                    .call()
+                    .content()));
+        }
+        catch (Exception exception) {
+            log.warn("자기 검증 실패", exception);
+            return Optional.of("검증하지 못했습니다 (LLM 호출 실패)");
+        }
+    }
+
+    /** 첫 줄을 그냥 쓰면 형식을 어겼을 때 엉뚱한 문장이 판정으로 화면에 올라갑니다. */
+    private static String verdictLine(String raw) {
+        if (raw == null) {
+            return "판정을 읽지 못했습니다";
+        }
+        return raw.lines()
+                .map(StudentRagPipeline::stripDecoration)
+                .filter(line -> line.startsWith("통과") || line.startsWith("주의"))
+                .findFirst()
+                .map(line -> line.length() > 120 ? line.substring(0, 120) + "…" : line)
+                .orElse("판정을 읽지 못했습니다 (모델이 형식을 지키지 않음)");
+    }
+
+    private static String stripDecoration(String line) {
+        String text = LIST_MARKER.matcher(line.strip()).replaceFirst("");
+        return QUOTES.matcher(text).replaceAll("").strip();
     }
 }
