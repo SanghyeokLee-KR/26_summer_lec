@@ -126,7 +126,8 @@ public class IndexingService {
                 prefix + "청킹 (" + options.strategy().name() + ", size=" + options.chunkSize() + ")"));
         t0 = System.currentTimeMillis();
 
-        List<Document> chunks = options.strategy().split(pages, options.chunkSize(), options.overlap());
+        List<Document> chunks = options.strategy().split(pages, options.chunkSize(), options.overlap(),
+                this.knowledgeBase.embeddingModel());
         chunks = withMetadata(chunks, docId, fileName);
 
         int avgChars = chunks.isEmpty() ? 0
