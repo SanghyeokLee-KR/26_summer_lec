@@ -2,8 +2,10 @@ package com.lecture.rag.day3.pipeline;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,6 +51,14 @@ public class StudentRagPipeline extends AbstractRagPipeline {
     private static final Pattern LIST_MARKER = Pattern.compile("^(?:[-*•>#]+|\\d+\\s*[.)])\\s*");
     private static final Pattern EDGE_NOISE = Pattern.compile("^[\"'“”‘’*_`]+|[\"'“”‘’*_`]+$");
     private static final Pattern QUOTES = Pattern.compile("[\"“”]");
+
+    /** "RTX-4090", "제12조"를 쪼개면 안 되므로 양끝만 다듬습니다. */
+    private static final Pattern EDGE_PUNCT = Pattern.compile("^[^\\p{L}\\p{N}]+|[^\\p{L}\\p{N}]+$");
+
+    /** 긴 것부터 떼야 "에서"가 "에"보다 먼저 걸립니다. */
+    private static final List<String> PARTICLES = List.of(
+            "에서", "으로", "까지", "부터", "에게",
+            "은", "는", "이", "가", "을", "를", "의", "에", "와", "과", "도", "만", "로");
 
     public StudentRagPipeline(KnowledgeBase knowledgeBase, ChatModel chatModel) {
         super(knowledgeBase, chatModel);
@@ -181,23 +191,73 @@ public class StudentRagPipeline extends AbstractRagPipeline {
      * 모델명(RTX-4090), 조항 번호(제12조), 사람 이름 같은 고유명사가 그렇다.
      * 단순 단어 매칭 점수를 벡터 검색 결과에 합치는 것만으로도 체감 품질이 꽤 올라간다.
      *
-     * <p>구현 힌트:
-     * <pre>
-     * 1) 전체 청크 받기:   knowledgeBase.chunksOf(docIds)   // docIds가 비면 전체
-     * 2) 질문을 공백으로 쪼개 2글자 이상 단어만 남기기
-     * 3) 청크별 점수 = 청크 본문에 등장한 단어 개수 (또는 등장 횟수 합)
-     *    - 대소문자 무시:  chunk.getText().toLowerCase().contains(word.toLowerCase())
-     *    - 더 해보고 싶으면 BM25: 흔한 단어의 가중치를 낮추는 방식 (Day2 M2.4 참고)
-     * 4) 점수 내림차순으로 상위 options.topKOrDefault()개만 반환
-     * 5) 점수가 0인 청크는 버릴 것 — 안 버리면 관련 없는 청크가 컨텍스트를 오염시킨다
-     * </pre>
-     *
-     * @return 키워드로 찾은 청크. 구현 전에는 {@code Optional.empty()}
+     * <p>등장 횟수만 세면 "신청", "제도"같이 문서 전체에 깔린 단어가 점수를 독식해서 idf를 곱합니다.
      */
     @Override
     protected Optional<List<Document>> keywordSearch(String query, List<String> docIds, RagOptions options) {
-        // TODO(실버): 위 힌트를 참고해 구현하고, 아래 줄을 지우세요.
-        return Optional.empty();
+        List<String> terms = searchTerms(query);
+        List<Document> chunks = this.knowledgeBase.chunksOf(docIds);
+        if (terms.isEmpty() || chunks.isEmpty()) {
+            return Optional.of(List.of());
+        }
+
+        List<String> lowered = chunks.stream()
+                .map(chunk -> chunk.getText() == null ? "" : chunk.getText().toLowerCase(Locale.ROOT))
+                .toList();
+
+        double[] scores = new double[chunks.size()];
+        for (String term : terms) {
+            long df = lowered.stream().filter(text -> text.contains(term)).count();
+            if (df == 0) {
+                continue;
+            }
+            double idf = Math.log(1.0 + chunks.size() / (double) df);
+            for (int i = 0; i < lowered.size(); i++) {
+                int tf = countOccurrences(lowered.get(i), term);
+                if (tf > 0) {
+                    // 10번 나왔다고 10배 관련 있는 건 아니라서 log로 눌러둡니다
+                    scores[i] += idf * (1 + Math.log(tf));
+                }
+            }
+        }
+
+        // 0점을 남기면 관련 없는 청크가 컨텍스트를 오염시킵니다
+        return Optional.of(IntStream.range(0, chunks.size())
+                .filter(i -> scores[i] > 0)
+                .boxed()
+                .sorted((a, b) -> Double.compare(scores[b], scores[a]))
+                .limit(options.topKOrDefault())
+                .map(chunks::get)
+                .toList());
+    }
+
+    private static List<String> searchTerms(String query) {
+        List<String> terms = new ArrayList<>();
+        for (String word : query.toLowerCase(Locale.ROOT).split("\\s+")) {
+            String term = stripParticle(EDGE_PUNCT.matcher(word).replaceAll(""));
+            if (term.length() >= 2 && !terms.contains(term)) {
+                terms.add(term);
+            }
+        }
+        return terms;
+    }
+
+    /** 떼고도 2글자가 남을 때만 조사로 봅니다. 안 그러면 "도로"에서 "로"를 떼어냅니다. */
+    private static String stripParticle(String word) {
+        for (String particle : PARTICLES) {
+            if (word.endsWith(particle) && word.length() - particle.length() >= 2) {
+                return word.substring(0, word.length() - particle.length());
+            }
+        }
+        return word;
+    }
+
+    private static int countOccurrences(String text, String term) {
+        int total = 0;
+        for (int at = text.indexOf(term); at >= 0; at = text.indexOf(term, at + term.length())) {
+            total++;
+        }
+        return total;
     }
 
     // =================================================================== 실버 ③
