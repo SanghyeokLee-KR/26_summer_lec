@@ -173,8 +173,8 @@ public class StudentRagPipeline extends AbstractRagPipeline {
                 """.formatted(conversation.isBlank() ? "(없음)" : conversation, question);
     }
 
-    /** 쿼리로 쓸 수 없는 줄이면 빈 문자열을 돌려줍니다. */
-    private static String cleanQuery(String line) {
+    /** 쿼리로 쓸 수 없는 줄이면 빈 문자열을 돌려줍니다. 같은 패키지의 다른 파이프라인도 씁니다. */
+    static String cleanQuery(String line) {
         String text = line.strip();
         String previous;
         do {
